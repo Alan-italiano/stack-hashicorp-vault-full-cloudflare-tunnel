@@ -1,0 +1,51 @@
+# Terraform / OpenTofu working directories and state
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+
+# Plan files
+*.tfplan
+*.plan
+
+# Variable files with secrets
+*.tfvars
+*.tfvars.json
+!*.tfvars.example
+
+# Local environment files
+.env
+.env.*
+!.env.example
+
+# Certificates and private keys generated locally
+*.pem
+*.key
+*.p12
+*.pfx
+*.csr
+
+# Project-specific sensitive bootstrap artifacts
+bootstrap/vault-init.json
+
+# Python cache and virtual environments
+__pycache__/
+*.py[cod]
+*.pyo
+.python-version
+.venv/
+venv/
+env/
+
+# IDE and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
