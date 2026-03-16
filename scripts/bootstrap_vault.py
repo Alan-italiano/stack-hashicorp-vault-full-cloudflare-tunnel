@@ -8,12 +8,14 @@ import ssl
 import subprocess
 import sys
 import time
+import urllib.parse
 import urllib.error
 import urllib.request
 
 
-# The TLS context is initialized at runtime after Terraform passes the Vault CA.
+# The TLS contexts are initialized at runtime after Terraform passes the Vault and cluster CAs.
 TLS_CONTEXT = None
+KUBERNETES_CONTEXT = None
 
 
 # Emit bootstrap progress in a consistent format for Terraform/local-exec logs.
@@ -27,6 +29,13 @@ def build_tls_context(vault_ca_cert_b64):
     context = ssl.create_default_context()
     context.load_verify_locations(cadata=base64.b64decode(vault_ca_cert_b64).decode("utf-8"))
     context.check_hostname = False
+    return context
+
+
+# Build an HTTPS context for direct Kubernetes API calls using the cluster CA.
+def build_kubernetes_context(kubernetes_ca_b64):
+    context = ssl.create_default_context()
+    context.load_verify_locations(cadata=base64.b64decode(kubernetes_ca_b64).decode("utf-8"))
     return context
 
 
@@ -72,6 +81,52 @@ def request(method, url, payload=None, token=None, expected_statuses=None):
         raise RuntimeError(f"Vault API {method} {url} failed with {exc.code}: {body}") from exc
 
 
+# Ask AWS for a fresh EKS bearer token whenever the bootstrap needs to call Kubernetes directly.
+def get_kubernetes_bearer_token(cluster_name, region):
+    result = run(
+        [
+            "aws",
+            "eks",
+            "get-token",
+            "--cluster-name",
+            cluster_name,
+            "--region",
+            region,
+        ]
+    )
+    payload = json.loads(result.stdout)
+    token = payload.get("status", {}).get("token")
+    if not token:
+        raise RuntimeError("aws eks get-token returned an empty bearer token")
+    return token
+
+
+# Call the Kubernetes API directly so bootstrap is less dependent on local kubectl state.
+def kubernetes_request(method, kubernetes_host, path, cluster_name, region, payload=None, expected_statuses=None):
+    data = None
+    headers = {
+        "Authorization": f"Bearer {get_kubernetes_bearer_token(cluster_name, region)}",
+        "Accept": "application/json",
+    }
+
+    if payload is not None:
+        data = json.dumps(payload).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+
+    url = f"{kubernetes_host.rstrip('/')}{path}"
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
+
+    try:
+        with urllib.request.urlopen(req, timeout=10, context=KUBERNETES_CONTEXT) as response:
+            body = response.read().decode("utf-8")
+            return response.status, json.loads(body) if body else {}
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8")
+        if expected_statuses and exc.code in expected_statuses:
+            return exc.code, json.loads(body) if body else {}
+        raise RuntimeError(f"Kubernetes API {method} {url} failed with {exc.code}: {body}") from exc
+
+
 # Reserve a random localhost port for kubectl port-forward to expose Vault temporarily.
 def find_free_port():
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
@@ -80,25 +135,22 @@ def find_free_port():
 
 
 # Wait until the first Vault pod exists and reaches Running so the bootstrap can begin.
-def wait_for_pod_running(namespace, pod_name):
+def wait_for_pod_running(namespace, pod_name, kubernetes_host, cluster_name, region):
     log(f"Waiting for {pod_name} to reach Running phase")
     deadline = time.time() + 900
+    pod_name_escaped = urllib.parse.quote(pod_name, safe="")
+    namespace_escaped = urllib.parse.quote(namespace, safe="")
     while time.time() < deadline:
-        result = run(
-            [
-                "kubectl",
-                "-n",
-                namespace,
-                "get",
-                "pod",
-                pod_name,
-                "-o",
-                "jsonpath={.status.phase}",
-            ],
-            check=False,
+        status_code, payload = kubernetes_request(
+            "GET",
+            kubernetes_host,
+            f"/api/v1/namespaces/{namespace_escaped}/pods/{pod_name_escaped}",
+            cluster_name,
+            region,
+            expected_statuses={200, 404},
         )
-        phase = result.stdout.strip()
-        if result.returncode == 0 and phase == "Running":
+        phase = payload.get("status", {}).get("phase") if status_code == 200 else None
+        if phase == "Running":
             log(f"{pod_name} is Running")
             return
         time.sleep(5)
@@ -221,8 +273,34 @@ def ensure_kv_v2(base_url, token):
     )
 
 
+# Request a short-lived reviewer JWT directly from the Kubernetes TokenRequest API.
+def create_service_account_token(namespace, service_account, kubernetes_host, cluster_name, region):
+    log("Issuing token for Vault service account")
+    namespace_escaped = urllib.parse.quote(namespace, safe="")
+    service_account_escaped = urllib.parse.quote(service_account, safe="")
+    _, payload = kubernetes_request(
+        "POST",
+        kubernetes_host,
+        f"/api/v1/namespaces/{namespace_escaped}/serviceaccounts/{service_account_escaped}/token",
+        cluster_name,
+        region,
+        payload={
+            "apiVersion": "authentication.k8s.io/v1",
+            "kind": "TokenRequest",
+            "spec": {
+                "expirationSeconds": 86400,
+            },
+        },
+        expected_statuses={201},
+    )
+    reviewer_jwt = payload.get("status", {}).get("token")
+    if not reviewer_jwt:
+        raise RuntimeError("Kubernetes TokenRequest API returned an empty reviewer JWT")
+    return reviewer_jwt
+
+
 # Enable and configure the Kubernetes auth method so workloads can authenticate to Vault.
-def ensure_kubernetes_auth(base_url, token, namespace, service_account, kubernetes_host, kubernetes_ca_b64):
+def ensure_kubernetes_auth(base_url, token, namespace, service_account, kubernetes_host, kubernetes_ca_b64, cluster_name, region):
     _, auth_methods = request("GET", f"{base_url}/v1/sys/auth", token=token)
     if "kubernetes/" not in auth_methods:
         log("Enabling auth method kubernetes")
@@ -236,21 +314,13 @@ def ensure_kubernetes_auth(base_url, token, namespace, service_account, kubernet
     else:
         log("Auth method kubernetes is already enabled")
 
-    log("Issuing token for Vault service account")
-    token_result = run(
-        [
-            "kubectl",
-            "-n",
-            namespace,
-            "create",
-            "token",
-            service_account,
-            "--duration=24h",
-        ]
+    reviewer_jwt = create_service_account_token(
+        namespace,
+        service_account,
+        kubernetes_host,
+        cluster_name,
+        region,
     )
-    reviewer_jwt = token_result.stdout.strip()
-    if not reviewer_jwt:
-        raise RuntimeError("kubectl create token returned an empty reviewer JWT")
 
     kubernetes_ca_cert = base64.b64decode(kubernetes_ca_b64).decode("utf-8")
     log("Configuring Vault Kubernetes auth backend")
@@ -389,13 +459,14 @@ def parse_args():
 
 # Orchestrate the full bootstrap sequence from connectivity checks to engine/auth/database setup.
 def main():
-    global TLS_CONTEXT
+    global TLS_CONTEXT, KUBERNETES_CONTEXT
 
     args = parse_args()
     TLS_CONTEXT = build_tls_context(args.vault_ca_cert_b64)
+    KUBERNETES_CONTEXT = build_kubernetes_context(args.kubernetes_ca_b64)
 
     pod_name = "vault-0"
-    wait_for_pod_running(args.namespace, pod_name)
+    wait_for_pod_running(args.namespace, pod_name, args.kubernetes_host, args.cluster_name, args.region)
 
     local_port = find_free_port()
     process = start_port_forward(args.namespace, pod_name, local_port)
@@ -411,6 +482,8 @@ def main():
             args.service_account,
             args.kubernetes_host,
             args.kubernetes_ca_b64,
+            args.cluster_name,
+            args.region,
         )
         ensure_audit_stdout(base_url, root_token)
         ensure_client_counters(base_url, root_token)

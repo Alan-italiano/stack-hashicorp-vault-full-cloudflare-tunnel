@@ -83,6 +83,6 @@ resource "helm_release" "kube_prometheus_stack" {
 
   depends_on = [
     helm_release.cert_manager,
-    null_resource.wait_for_certificates
+    kubernetes_manifest.grafana_certificate
   ]
 }

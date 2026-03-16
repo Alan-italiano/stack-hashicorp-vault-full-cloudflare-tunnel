@@ -55,7 +55,7 @@ resource "null_resource" "vault_bootstrap" {
     module.eks,
     module.irsa_vault,
     helm_release.cert_manager,
-    null_resource.wait_for_certificates,
+    kubernetes_manifest.vault_server_certificate,
     kubernetes_namespace.vault,
     kubernetes_role_binding_v1.vault_discovery,
     kubernetes_cluster_role_binding_v1.vault_auth_delegator,
