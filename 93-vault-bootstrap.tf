@@ -18,16 +18,16 @@ resource "kubernetes_cluster_role_binding_v1" "vault_auth_delegator" {
 
 resource "null_resource" "vault_bootstrap" {
   triggers = {
-    always_run                = timestamp()
-    script_hash               = filesha1("${path.module}/scripts/bootstrap_vault.py")
-    postgres_host             = "postgres-service.${local.postgres_namespace}.svc.cluster.local"
-    postgres_port             = "5432"
-    postgres_database_name    = var.postgres_database_name
-    postgres_admin_username   = var.postgres_admin_username
-    postgres_admin_password   = sha1(var.postgres_admin_password)
-    vault_ca_cert_hash        = sha1(tls_self_signed_cert.vault_internal_ca.cert_pem)
-    vault_db_connection_name  = "postgres"
-    vault_db_role_name        = "postgres-dynamic"
+    always_run               = timestamp()
+    script_hash              = filesha1("${path.module}/scripts/bootstrap_vault.py")
+    postgres_host            = "postgres-service.${local.postgres_namespace}.svc.cluster.local"
+    postgres_port            = "5432"
+    postgres_database_name   = var.postgres_database_name
+    postgres_admin_username  = var.postgres_admin_username
+    postgres_admin_password  = sha1(var.postgres_admin_password)
+    vault_ca_cert_hash       = sha1(tls_self_signed_cert.vault_internal_ca.cert_pem)
+    vault_db_connection_name = "postgres"
+    vault_db_role_name       = "postgres-dynamic"
   }
 
   provisioner "local-exec" {
@@ -55,7 +55,7 @@ resource "null_resource" "vault_bootstrap" {
     module.eks,
     module.irsa_vault,
     helm_release.cert_manager,
-    kubernetes_manifest.vault_server_certificate,
+    kubectl_manifest.vault_server_certificate,
     kubernetes_namespace.vault,
     kubernetes_role_binding_v1.vault_discovery,
     kubernetes_cluster_role_binding_v1.vault_auth_delegator,

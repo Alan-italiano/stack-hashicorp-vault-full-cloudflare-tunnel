@@ -1,4 +1,6 @@
 resource "kubernetes_namespace" "cert_manager" {
+  depends_on = [time_sleep.eks_access_ready]
+
   metadata {
     name = local.cert_manager_namespace
   }
@@ -42,8 +44,8 @@ resource "kubernetes_secret_v1" "cert_manager_cloudflare_api_token" {
   type = "Opaque"
 }
 
-resource "kubernetes_manifest" "letsencrypt_cloudflare_cluster_issuer" {
-  manifest = {
+resource "kubectl_manifest" "letsencrypt_cloudflare_cluster_issuer" {
+  yaml_body = yamlencode({
     apiVersion = "cert-manager.io/v1"
     kind       = "ClusterIssuer"
     metadata = {
@@ -70,7 +72,7 @@ resource "kubernetes_manifest" "letsencrypt_cloudflare_cluster_issuer" {
         ]
       }
     }
-  }
+  })
 
   depends_on = [
     helm_release.cert_manager,
@@ -78,8 +80,8 @@ resource "kubernetes_manifest" "letsencrypt_cloudflare_cluster_issuer" {
   ]
 }
 
-resource "kubernetes_manifest" "vault_internal_ca_issuer" {
-  manifest = {
+resource "kubectl_manifest" "vault_internal_ca_issuer" {
+  yaml_body = yamlencode({
     apiVersion = "cert-manager.io/v1"
     kind       = "Issuer"
     metadata = {
@@ -91,7 +93,7 @@ resource "kubernetes_manifest" "vault_internal_ca_issuer" {
         secretName = kubernetes_secret_v1.vault_internal_ca.metadata[0].name
       }
     }
-  }
+  })
 
   depends_on = [
     helm_release.cert_manager,
@@ -100,8 +102,8 @@ resource "kubernetes_manifest" "vault_internal_ca_issuer" {
   ]
 }
 
-resource "kubernetes_manifest" "vault_server_certificate" {
-  manifest = {
+resource "kubectl_manifest" "vault_server_certificate" {
+  yaml_body = yamlencode({
     apiVersion = "cert-manager.io/v1"
     kind       = "Certificate"
     metadata = {
@@ -140,15 +142,15 @@ resource "kubernetes_manifest" "vault_server_certificate" {
         "key encipherment",
       ]
     }
-  }
+  })
 
   depends_on = [
-    kubernetes_manifest.vault_internal_ca_issuer,
+    kubectl_manifest.vault_internal_ca_issuer,
   ]
 }
 
-resource "kubernetes_manifest" "grafana_certificate" {
-  manifest = {
+resource "kubectl_manifest" "grafana_certificate" {
+  yaml_body = yamlencode({
     apiVersion = "cert-manager.io/v1"
     kind       = "Certificate"
     metadata = {
@@ -173,10 +175,10 @@ resource "kubernetes_manifest" "grafana_certificate" {
         "key encipherment",
       ]
     }
-  }
+  })
 
   depends_on = [
-    kubernetes_manifest.letsencrypt_cloudflare_cluster_issuer,
+    kubectl_manifest.letsencrypt_cloudflare_cluster_issuer,
     kubernetes_namespace.monitoring,
   ]
 }

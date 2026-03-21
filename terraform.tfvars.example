@@ -1,14 +1,17 @@
 region                     = "us-east-1"
 cluster_name               = "vault-eks-lab"
 vault_snapshot_bucket_name = "vault-lab-snapshots-example"
+vault_snapshot_bucket_admin_principal_arns = [
+  "arn:aws:iam::123456789012:user/terraform",
+]
 domain_name                = "lab-internal.com.br"
-cloudflare_zone_id         = "preencher-zone-id"
-cloudflare_account_id      = "preencher-account-id"
+cloudflare_zone_id         = "your-cloudflare-zone-id"
+cloudflare_account_id      = "your-cloudflare-account-id"
 cloudflare_tunnel_name     = "vault-eks-lab"
 acme_email                 = "ops@lab-internal.com.br"
 vault_hostname             = "vault.lab-internal.com.br"
 vault_image_tag            = "1.21.4"
 grafana_hostname           = "grafana.lab-internal.com.br"
-postgres_allowed_cidrs     = ["0.0.0.0/0"]
+postgres_allowed_cidrs     = ["203.0.113.10/32"]
 postgres_database_name     = "psdb"
 postgres_admin_username    = "psuser"

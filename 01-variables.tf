@@ -22,6 +22,12 @@ variable "kubernetes_version" {
   default     = "1.30"
 }
 
+variable "cluster_service_ipv4_cidr" {
+  description = "CIDR used by Kubernetes Services in the EKS cluster"
+  type        = string
+  default     = "172.20.0.0/16"
+}
+
 variable "vault_hostname" {
   description = "Vault FQDN"
   type        = string
@@ -84,6 +90,12 @@ variable "vault_snapshot_bucket_name" {
   description = "Bucket used by Vault snapshots"
   type        = string
   default     = "vault-lab-snapshots-unique"
+}
+
+variable "vault_snapshot_bucket_admin_principal_arns" {
+  description = "Additional IAM principal ARNs allowed to administer and read the Vault snapshots bucket"
+  type        = list(string)
+  default     = []
 }
 
 variable "vpc_cidr" {

@@ -1,4 +1,4 @@
-# Terraform / OpenTofu working directories and state
+# Terraform / Openterraform working directories and state
 .terraform/
 *.tfstate
 *.tfstate.*

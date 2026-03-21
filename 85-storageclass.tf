@@ -1,4 +1,6 @@
 resource "kubernetes_storage_class_v1" "vault_ebs_gp3" {
+  depends_on = [time_sleep.eks_access_ready]
+
   metadata {
     name = var.vault_storage_class_name
     annotations = {

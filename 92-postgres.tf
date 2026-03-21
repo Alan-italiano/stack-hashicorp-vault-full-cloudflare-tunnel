@@ -1,4 +1,4 @@
-﻿resource "kubernetes_namespace" "postgres" {
+resource "kubernetes_namespace" "postgres" {
   metadata {
     name = local.postgres_namespace
   }

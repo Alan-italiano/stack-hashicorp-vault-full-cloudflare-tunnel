@@ -1,4 +1,4 @@
-# EKS + Vault com OpenTofu
+# EKS + Vault com Openterraform
 
 Esta stack provisiona:
 
@@ -23,15 +23,16 @@ $env:TF_VAR_cloudflare_api_token = "seu-token-cloudflare"
 ```
 
 ```bash
-cp tofu.tfvars.example tofu.tfvars
-# ajuste valores em tofu.tfvars
+cp terraform.tfvars.example terraform.tfvars
+# ajuste valores em terraform.tfvars
+# inclua em `vault_snapshot_bucket_admin_principal_arns` os ARNs IAM que podem operar o bucket S3 de snapshots
 
 export TF_VAR_postgres_admin_password='sua-senha-postgres'
 export TF_VAR_cloudflare_api_token='seu-token-cloudflare'
 
-tofu init
-tofu plan -var-file=tofu.tfvars
-tofu apply -var-file=tofu.tfvars -auto-approve
+terraform init
+terraform plan -var-file=terraform.tfvars
+terraform apply -var-file=terraform.tfvars -auto-approve
 ```
 
 ## Acesso
@@ -49,12 +50,12 @@ kubectl -n monitoring get secret kube-prometheus-stack-grafana \
 Comandos uteis tambem via outputs do Terraform:
 
 ```bash
-tofu output vault_url
-tofu output grafana_url
-tofu output grafana_admin_username
-tofu output -raw grafana_admin_password_command
-tofu output -raw vault_status_command
-tofu output -raw vault_raft_peers_command
+terraform output vault_url
+terraform output grafana_url
+terraform output grafana_admin_username
+terraform output -raw grafana_admin_password_command
+terraform output -raw vault_status_command
+terraform output -raw vault_raft_peers_command
 ```
 
 ## O Que O Bootstrap Configura
@@ -124,3 +125,6 @@ kubectl logs -n cloudflare deploy/cloudflared --since=5m
 - O Vault usa uma CA interna dedicada para trafego entre pods e para a origem validada pelo `cloudflared`.
 - O `cloudflared` publica Vault e Grafana pelos services internos do cluster.
 - O Vault publica metricas de telemetria e cria `ServiceMonitor` para coleta pelo Prometheus Operator.
+- O Grafana provisiona automaticamente os dashboards `Vault Telemetry` e `Vault Audit Logs` a partir dos JSONs em `grafana-dashboard/`.
+- Os logs de auditoria do Vault enviados para `stdout` ficam consultaveis no Loki logo apos o `apply`.
+- O bucket S3 de snapshots libera somente a role do Vault, o `root` da conta e os ARNs definidos em `vault_snapshot_bucket_admin_principal_arns`.

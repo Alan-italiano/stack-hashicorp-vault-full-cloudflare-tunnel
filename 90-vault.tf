@@ -1,4 +1,6 @@
 resource "kubernetes_namespace" "vault" {
+  depends_on = [time_sleep.eks_access_ready]
+
   metadata {
     name = local.vault_namespace
   }
@@ -185,7 +187,7 @@ resource "helm_release" "vault" {
 
   depends_on = [
     helm_release.cert_manager,
-    kubernetes_manifest.vault_server_certificate,
+    kubectl_manifest.vault_server_certificate,
     helm_release.kube_prometheus_stack,
     kubernetes_storage_class_v1.vault_ebs_gp3,
     aws_kms_key_policy.vault_unseal,

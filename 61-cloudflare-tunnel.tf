@@ -30,6 +30,8 @@ resource "cloudflare_record" "grafana" {
 }
 
 resource "kubernetes_namespace" "cloudflare" {
+  depends_on = [time_sleep.eks_access_ready]
+
   metadata {
     name = local.cloudflare_namespace
   }
@@ -60,9 +62,9 @@ resource "kubernetes_config_map_v1" "cloudflare_tunnel" {
 
   data = {
     "config.yaml" = yamlencode({
-      tunnel              = cloudflare_zero_trust_tunnel_cloudflared.cluster.id
+      tunnel             = cloudflare_zero_trust_tunnel_cloudflared.cluster.id
       "credentials-file" = "/etc/cloudflared/creds/credentials.json"
-      metrics             = "0.0.0.0:2000"
+      metrics            = "0.0.0.0:2000"
       ingress = [
         {
           hostname = var.vault_hostname
