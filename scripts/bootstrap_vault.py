@@ -57,7 +57,7 @@ def run(command, capture_output=True, check=True):
 
 
 # Send authenticated requests to the Vault HTTP API and normalize expected responses.
-def request(method, url, payload=None, token=None, expected_statuses=None):
+def request(method, url, payload=None, token=None, expected_statuses=None, timeout=10):
     data = None
     headers = {}
 
@@ -71,7 +71,7 @@ def request(method, url, payload=None, token=None, expected_statuses=None):
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
 
     try:
-        with urllib.request.urlopen(req, timeout=10, context=TLS_CONTEXT) as response:
+        with urllib.request.urlopen(req, timeout=timeout, context=TLS_CONTEXT) as response:
             body = response.read().decode("utf-8")
             return response.status, json.loads(body) if body else {}
     except urllib.error.HTTPError as exc:
@@ -79,6 +79,8 @@ def request(method, url, payload=None, token=None, expected_statuses=None):
         if expected_statuses and exc.code in expected_statuses:
             return exc.code, json.loads(body) if body else {}
         raise RuntimeError(f"Vault API {method} {url} failed with {exc.code}: {body}") from exc
+    except (urllib.error.URLError, TimeoutError, socket.timeout) as exc:
+        raise RuntimeError(f"Vault API {method} {url} timed out or failed to connect: {exc}") from exc
 
 
 # Ask AWS for a fresh EKS bearer token whenever the bootstrap needs to call Kubernetes directly.
@@ -199,6 +201,27 @@ def wait_for_vault(base_url):
     raise RuntimeError("Vault did not become reachable within 10 minutes")
 
 
+# After initialization, wait for Vault to finish auto-unseal and elect a leader.
+def wait_for_vault_post_init(base_url):
+    deadline = time.time() + 300
+    while time.time() < deadline:
+        try:
+            status, _ = request(
+                "GET",
+                f"{base_url}/v1/sys/health",
+                expected_statuses={200, 429, 472, 473, 501, 503},
+                timeout=30,
+            )
+            if status in {200, 429, 472, 473}:
+                log(f"Vault is ready for bootstrap operations with health status {status}")
+                return
+        except Exception:
+            pass
+        time.sleep(5)
+
+    raise RuntimeError("Vault did not become ready for bootstrap operations within 5 minutes after initialization")
+
+
 # Load previously persisted initialization data so reruns can reuse the root token safely.
 def load_existing_credentials(output_file):
     if not os.path.exists(output_file):
@@ -225,7 +248,7 @@ def persist_credentials(output_file, init_response):
 
 # Initialize Vault once and return the root token; on reruns, reuse the stored token.
 def ensure_initialized(base_url, output_file):
-    status, payload = request("GET", f"{base_url}/v1/sys/init")
+    status, payload = request("GET", f"{base_url}/v1/sys/init", timeout=30)
     if status != 200:
         raise RuntimeError(f"Unexpected status from /sys/init: {status}")
 
@@ -236,6 +259,19 @@ def ensure_initialized(base_url, output_file):
             raise RuntimeError(
                 "Vault is already initialized, but no local root token file was found at "
                 f"{output_file}. Restore that file or re-run with a known root token manually."
+            )
+        status, _ = request(
+            "GET",
+            f"{base_url}/v1/auth/token/lookup-self",
+            token=existing["root_token"],
+            expected_statuses={200, 403},
+            timeout=30,
+        )
+        if status == 403:
+            raise RuntimeError(
+                "Vault is already initialized, but the root token stored in "
+                f"{output_file} is invalid for the current Vault cluster. "
+                "This usually means the local bootstrap file and the Raft data are out of sync."
             )
         return existing["root_token"]
 
@@ -248,6 +284,7 @@ def ensure_initialized(base_url, output_file):
             "recovery_threshold": 3,
         },
         expected_statuses={200},
+        timeout=120,
     )
     persist_credentials(output_file, init_response)
     return init_response["root_token"]
@@ -436,6 +473,94 @@ def ensure_postgres_role(base_url, token, args):
     )
 
 
+def ensure_policy(base_url, token, name, policy):
+    log(f"Configuring policy {name}")
+    request(
+        "PUT",
+        f"{base_url}/v1/sys/policies/acl/{name}",
+        payload={"policy": policy},
+        token=token,
+        expected_statuses={200, 204},
+    )
+
+
+def normalize_oidc_discovery_url(url):
+    normalized = url.strip()
+    if not normalized:
+        return normalized
+
+    if normalized.endswith("/.well-known/openid-configuration"):
+        normalized = normalized[: -len("/.well-known/openid-configuration")]
+
+    parsed = urllib.parse.urlparse(normalized)
+    if parsed.scheme and parsed.netloc and parsed.path in {"", "/"}:
+        return f"{parsed.scheme}://{parsed.netloc}/"
+
+    if not normalized.endswith("/"):
+        return f"{normalized}/"
+
+    return normalized
+
+
+def ensure_oidc_auth(base_url, token, args):
+    if not args.oidc_discovery_url or not args.oidc_client_id or not args.oidc_client_secret or not args.oidc_bound_email:
+        log("OIDC inputs were not fully provided, skipping OIDC configuration")
+        return
+
+    oidc_discovery_url = normalize_oidc_discovery_url(args.oidc_discovery_url)
+
+    _, auth_methods = request("GET", f"{base_url}/v1/sys/auth", token=token)
+    if "oidc/" not in auth_methods:
+        log("Enabling auth method oidc")
+        request(
+            "POST",
+            f"{base_url}/v1/sys/auth/oidc",
+            payload={"type": "oidc"},
+            token=token,
+            expected_statuses={204},
+        )
+    else:
+        log("Auth method oidc is already enabled")
+
+    redirect_uris = [
+        f"https://{args.vault_hostname}/ui/vault/auth/oidc/oidc/callback",
+        "http://localhost:8250/oidc/callback",
+    ]
+
+    log("Configuring Vault OIDC auth backend")
+    request(
+        "POST",
+        f"{base_url}/v1/auth/oidc/config",
+        payload={
+            "oidc_discovery_url": oidc_discovery_url,
+            "oidc_client_id": args.oidc_client_id,
+            "oidc_client_secret": args.oidc_client_secret,
+            "default_role": args.oidc_role_name,
+            "bound_issuer": oidc_discovery_url,
+        },
+        token=token,
+        expected_statuses={204},
+    )
+
+    log(f"Configuring Vault OIDC role {args.oidc_role_name}")
+    request(
+        "POST",
+        f"{base_url}/v1/auth/oidc/role/{args.oidc_role_name}",
+        payload={
+            "role_type": "oidc",
+            "user_claim": "email",
+            "bound_claims": {
+                "email": args.oidc_bound_email,
+            },
+            "allowed_redirect_uris": redirect_uris,
+            "oidc_scopes": ["openid", "profile", "email"],
+            "policies": ["admin"],
+        },
+        token=token,
+        expected_statuses={200, 204},
+    )
+
+
 # Define the Terraform-provided inputs required to initialize Vault and configure integrations.
 def parse_args():
     parser = argparse.ArgumentParser(description="Bootstrap Vault after Terraform apply")
@@ -454,6 +579,12 @@ def parse_args():
     parser.add_argument("--postgres-admin-password", required=True)
     parser.add_argument("--vault-db-connection-name", default="postgres")
     parser.add_argument("--vault-db-role-name", default="postgres-dynamic")
+    parser.add_argument("--vault-hostname", required=True)
+    parser.add_argument("--oidc-discovery-url", default="")
+    parser.add_argument("--oidc-client-id", default="")
+    parser.add_argument("--oidc-client-secret", default="")
+    parser.add_argument("--oidc-bound-email", default="")
+    parser.add_argument("--oidc-role-name", default="auth0-admin")
     return parser.parse_args()
 
 
@@ -474,6 +605,7 @@ def main():
         base_url = f"https://127.0.0.1:{local_port}"
         wait_for_vault(base_url)
         root_token = ensure_initialized(base_url, args.output_file)
+        wait_for_vault_post_init(base_url)
         ensure_kv_v2(base_url, root_token)
         ensure_kubernetes_auth(
             base_url,
@@ -490,6 +622,13 @@ def main():
         ensure_database_secrets_engine(base_url, root_token)
         ensure_postgres_connection(base_url, root_token, args)
         ensure_postgres_role(base_url, root_token, args)
+        ensure_policy(
+            base_url,
+            root_token,
+            "admin",
+            'path "*" {\n  capabilities = ["create", "read", "update", "delete", "list", "patch", "sudo"]\n}\n',
+        )
+        ensure_oidc_auth(base_url, root_token, args)
         log("Vault bootstrap completed successfully")
     finally:
         process.terminate()

@@ -155,3 +155,34 @@ variable "postgres_admin_password" {
   type        = string
   sensitive   = true
 }
+
+variable "vault_oidc_discovery_url" {
+  description = "OIDC discovery URL used by Vault"
+  type        = string
+  default     = null
+}
+
+variable "vault_oidc_client_id" {
+  description = "OIDC client ID used by Vault"
+  type        = string
+  default     = null
+}
+
+variable "vault_oidc_client_secret" {
+  description = "OIDC client secret used by Vault"
+  type        = string
+  sensitive   = true
+  default     = null
+}
+
+variable "vault_oidc_bound_email" {
+  description = "Email claim allowed to authenticate in the Vault OIDC admin role"
+  type        = string
+  default     = null
+}
+
+variable "vault_oidc_role_name" {
+  description = "Vault role name created for OIDC authentication"
+  type        = string
+  default     = "auth0-admin"
+}

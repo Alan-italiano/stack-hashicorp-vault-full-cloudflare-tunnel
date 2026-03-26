@@ -12,7 +12,10 @@ resource "helm_release" "kube_prometheus_stack" {
   chart            = "kube-prometheus-stack"
   namespace        = kubernetes_namespace.monitoring.metadata[0].name
   create_namespace = false
-  timeout          = 600
+  wait             = true
+  atomic           = true
+  cleanup_on_fail  = true
+  timeout          = 1200
 
   values = [
     yamlencode({
@@ -40,38 +43,11 @@ resource "helm_release" "kube_prometheus_stack" {
             folderAnnotation = "grafana_folder"
           }
         }
-        extraSecretMounts = [
-          {
-            name       = "grafana-tls"
-            secretName = "grafana-tls"
-            mountPath  = "/etc/grafana/certs"
-            readOnly   = true
-          }
-        ]
-        readinessProbe = {
-          httpGet = {
-            path   = "/api/health"
-            port   = "grafana"
-            scheme = "HTTPS"
-          }
-        }
-        livenessProbe = {
-          failureThreshold = 10
-          httpGet = {
-            path   = "/api/health"
-            port   = "grafana"
-            scheme = "HTTPS"
-          }
-          initialDelaySeconds = 60
-          timeoutSeconds      = 30
-        }
         "grafana.ini" = {
           server = {
-            protocol  = "https"
+            protocol  = "http"
             domain    = var.grafana_hostname
             root_url  = "https://${var.grafana_hostname}"
-            cert_file = "/etc/grafana/certs/tls.crt"
-            cert_key  = "/etc/grafana/certs/tls.key"
           }
         }
       }
@@ -93,8 +69,7 @@ resource "helm_release" "kube_prometheus_stack" {
   ]
 
   depends_on = [
-    helm_release.cert_manager,
-    kubectl_manifest.grafana_certificate
+    helm_release.cert_manager
   ]
 }
 

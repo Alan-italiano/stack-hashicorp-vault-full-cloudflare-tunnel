@@ -28,6 +28,12 @@ resource "null_resource" "vault_bootstrap" {
     vault_ca_cert_hash       = sha1(tls_self_signed_cert.vault_internal_ca.cert_pem)
     vault_db_connection_name = "postgres"
     vault_db_role_name       = "postgres-dynamic"
+    vault_oidc_discovery_url = coalesce(var.vault_oidc_discovery_url, "")
+    vault_oidc_client_id     = coalesce(var.vault_oidc_client_id, "")
+    vault_oidc_client_secret = sha1(coalesce(var.vault_oidc_client_secret, ""))
+    vault_oidc_bound_email   = coalesce(var.vault_oidc_bound_email, "")
+    vault_oidc_role_name     = var.vault_oidc_role_name
+    vault_hostname           = var.vault_hostname
   }
 
   provisioner "local-exec" {
@@ -47,7 +53,13 @@ resource "null_resource" "vault_bootstrap" {
         --postgres-admin-username "${var.postgres_admin_username}" \
         --postgres-admin-password "${var.postgres_admin_password}" \
         --vault-db-connection-name "postgres" \
-        --vault-db-role-name "postgres-dynamic"
+        --vault-db-role-name "postgres-dynamic" \
+        --vault-hostname "${var.vault_hostname}" \
+        --oidc-discovery-url "${coalesce(var.vault_oidc_discovery_url, "")}" \
+        --oidc-client-id "${coalesce(var.vault_oidc_client_id, "")}" \
+        --oidc-client-secret "${coalesce(var.vault_oidc_client_secret, "")}" \
+        --oidc-bound-email "${coalesce(var.vault_oidc_bound_email, "")}" \
+        --oidc-role-name "${var.vault_oidc_role_name}"
     EOT
   }
 

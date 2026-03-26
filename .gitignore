@@ -34,6 +34,13 @@ terraform.rc
 
 # Project-specific sensitive bootstrap artifacts
 bootstrap/vault-init.json
+bootstrap/*.json
+
+# Shell scripts may contain sensitive env vars filled in by operators — never commit with real values
+# scripts/terraform_*.sh  ← uncomment these lines if you fill in the secrets directly in the scripts
+# scripts/terraform_apply.sh
+# scripts/terraform_destroy.sh
+# scripts/terraform_plan.sh
 
 # Python cache and virtual environments
 __pycache__/

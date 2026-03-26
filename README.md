@@ -1,4 +1,4 @@
-# EKS + Vault com Openterraform
+# EKS + Vault com Opentofu
 
 Esta stack provisiona:
 
@@ -30,9 +30,9 @@ cp terraform.tfvars.example terraform.tfvars
 export TF_VAR_postgres_admin_password='sua-senha-postgres'
 export TF_VAR_cloudflare_api_token='seu-token-cloudflare'
 
-terraform init
-terraform plan -var-file=terraform.tfvars
-terraform apply -var-file=terraform.tfvars -auto-approve
+tofu init
+tofu plan -var-file=tofu.tfvars
+tofu apply -var-file=tofu.tfvars -auto-approve
 ```
 
 ## Acesso
@@ -47,15 +47,15 @@ kubectl -n monitoring get secret kube-prometheus-stack-grafana \
   -o jsonpath="{.data.admin-password}" | base64 -d; echo
 ```
 
-Comandos uteis tambem via outputs do Terraform:
+Comandos uteis tambem via outputs do tofu:
 
 ```bash
-terraform output vault_url
-terraform output grafana_url
-terraform output grafana_admin_username
-terraform output -raw grafana_admin_password_command
-terraform output -raw vault_status_command
-terraform output -raw vault_raft_peers_command
+tofu output vault_url
+tofu output grafana_url
+tofu output grafana_admin_username
+tofu output -raw grafana_admin_password_command
+tofu output -raw vault_status_command
+tofu output -raw vault_raft_peers_command
 ```
 
 ## O Que O Bootstrap Configura
@@ -65,6 +65,8 @@ O script `scripts/bootstrap_vault.py` configura automaticamente no Vault:
 - inicializacao e persistencia do `root_token` em `bootstrap/vault-init.json`
 - secret engine `kv-v2` em `kv/`
 - auth method `kubernetes/`
+- auth method `oidc/` com role admin quando as variaveis `vault_oidc_*` sao informadas
+- policy `admin` com acesso total ao Vault
 - audit device `file/` com `file_path=stdout` e `format=json`
 - client counters com `enabled=enable` e `retention_months=12`
 - secret engine `database/`
@@ -109,6 +111,29 @@ kubectl exec -n vault vault-0 -- sh -lc "VAULT_ADDR=https://vault-0.vault-intern
 kubectl exec -n vault vault-0 -- sh -lc "VAULT_ADDR=https://vault-0.vault-internal.vault.svc.cluster.local:8200 VAULT_CACERT=/vault/userconfig/ca/ca.crt VAULT_TOKEN=$ROOT_TOKEN vault read sys/internal/counters/config"
 kubectl exec -n vault vault-0 -- sh -lc "VAULT_ADDR=https://vault-0.vault-internal.vault.svc.cluster.local:8200 VAULT_CACERT=/vault/userconfig/ca/ca.crt VAULT_TOKEN=$ROOT_TOKEN vault read database/config/postgres"
 kubectl exec -n vault vault-0 -- sh -lc "VAULT_ADDR=https://vault-0.vault-internal.vault.svc.cluster.local:8200 VAULT_CACERT=/vault/userconfig/ca/ca.crt VAULT_TOKEN=$ROOT_TOKEN vault read database/roles/postgres-dynamic"
+```
+
+Validacao do OIDC com Auth0:
+
+```bash
+ROOT_TOKEN=$(jq -r .root_token bootstrap/vault-init.json)
+
+kubectl exec -n vault vault-0 -- sh -lc "VAULT_ADDR=https://vault-0.vault-internal.vault.svc.cluster.local:8200 VAULT_CACERT=/vault/userconfig/ca/ca.crt VAULT_TOKEN=$ROOT_TOKEN vault auth list"
+kubectl exec -n vault vault-0 -- sh -lc "VAULT_ADDR=https://vault-0.vault-internal.vault.svc.cluster.local:8200 VAULT_CACERT=/vault/userconfig/ca/ca.crt VAULT_TOKEN=$ROOT_TOKEN vault read auth/oidc/config"
+kubectl exec -n vault vault-0 -- sh -lc \"VAULT_ADDR=https://vault-0.vault-internal.vault.svc.cluster.local:8200 VAULT_CACERT=/vault/userconfig/ca/ca.crt VAULT_TOKEN=$ROOT_TOKEN vault read auth/oidc/role/auth0-admin\"
+```
+
+No aplicativo do Auth0, configure:
+
+- Allowed Callback URLs: `https://vault.lab-internal.com.br/ui/vault/auth/oidc/oidc/callback,http://localhost:8250/oidc/callback`
+- Allowed Logout URLs: `https://vault.lab-internal.com.br`
+- Allowed Web Origins: `https://vault.lab-internal.com.br`
+
+Login de teste:
+
+```bash
+export VAULT_ADDR="https://vault.lab-internal.com.br"
+vault login -method=oidc role=auth0-admin
 ```
 
 Logs do tunnel em caso de erro externo:

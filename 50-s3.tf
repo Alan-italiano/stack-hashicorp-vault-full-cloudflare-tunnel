@@ -2,6 +2,7 @@ locals {
   vault_snapshot_bucket_allowed_principal_arns = distinct(concat(
     var.vault_snapshot_bucket_admin_principal_arns,
     [
+      data.aws_caller_identity.current.arn,
       module.irsa_vault.iam_role_arn,
       "arn:${data.aws_partition.current.partition}:iam::${data.aws_caller_identity.current.account_id}:root"
     ]

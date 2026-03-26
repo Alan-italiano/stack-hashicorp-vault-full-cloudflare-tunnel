@@ -77,10 +77,9 @@ resource "kubernetes_config_map_v1" "cloudflare_tunnel" {
         },
         {
           hostname = var.grafana_hostname
-          service  = "https://kube-prometheus-stack-grafana.${kubernetes_namespace.monitoring.metadata[0].name}.svc.cluster.local:80"
+          service  = "http://kube-prometheus-stack-grafana.${kubernetes_namespace.monitoring.metadata[0].name}.svc.cluster.local:80"
           originRequest = {
-            httpHostHeader   = var.grafana_hostname
-            originServerName = var.grafana_hostname
+            httpHostHeader = var.grafana_hostname
           }
         },
         {

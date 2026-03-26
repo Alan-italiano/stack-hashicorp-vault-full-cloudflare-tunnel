@@ -1,17 +1,68 @@
+# ============================================================
+# terraform.tfvars.example
+# Copy this file to terraform.tfvars and fill in the values.
+# NEVER commit terraform.tfvars — it is excluded by .gitignore.
+# ============================================================
+
+# -----------------------------------------------------------
+# AWS / EKS
+# -----------------------------------------------------------
 region                     = "us-east-1"
 cluster_name               = "vault-eks-lab"
-vault_snapshot_bucket_name = "vault-lab-snapshots-example"
+
+# -----------------------------------------------------------
+# S3 — Vault Snapshots
+# -----------------------------------------------------------
+vault_snapshot_bucket_name = "vault-lab-snapshots-unique"
 vault_snapshot_bucket_admin_principal_arns = [
   "arn:aws:iam::123456789012:user/terraform",
 ]
-domain_name                = "lab-internal.com.br"
+
+# -----------------------------------------------------------
+# Cloudflare — SENSITIVE
+# cloudflare_api_token must be supplied via TF_VAR or tfvars
+# -----------------------------------------------------------
 cloudflare_zone_id         = "your-cloudflare-zone-id"
 cloudflare_account_id      = "your-cloudflare-account-id"
 cloudflare_tunnel_name     = "vault-eks-lab"
-acme_email                 = "ops@lab-internal.com.br"
-vault_hostname             = "vault.lab-internal.com.br"
+
+# SENSITIVE: Cloudflare API token with DNS edit + Tunnel permissions
+# Recommended: export TF_VAR_cloudflare_api_token="your-token" instead of setting it here
+cloudflare_api_token       = "your-cloudflare-api-token"
+
+# -----------------------------------------------------------
+# DNS / Hostnames
+# -----------------------------------------------------------
+domain_name                = "example.com"
+acme_email                 = "ops@example.com"
+vault_hostname             = "vault.example.com"
+grafana_hostname           = "grafana.example.com"
+
+# -----------------------------------------------------------
+# Vault
+# -----------------------------------------------------------
 vault_image_tag            = "1.21.4"
-grafana_hostname           = "grafana.lab-internal.com.br"
-postgres_allowed_cidrs     = ["203.0.113.10/32"]
+
+# -----------------------------------------------------------
+# PostgreSQL
+# CAUTION: postgres_allowed_cidrs must NOT be 0.0.0.0/0 in production
+# -----------------------------------------------------------
+postgres_allowed_cidrs     = ["203.0.113.10/32"]   # restrict to your IP/VPN CIDR
 postgres_database_name     = "psdb"
 postgres_admin_username    = "psuser"
+
+# SENSITIVE: PostgreSQL admin password
+# Recommended: export TF_VAR_postgres_admin_password="your-password" instead of setting it here
+postgres_admin_password    = "change-me-strong-password"
+
+# -----------------------------------------------------------
+# Vault OIDC (Auth0 or any OIDC provider) — SENSITIVE
+# -----------------------------------------------------------
+vault_oidc_discovery_url   = "https://tenant.us.auth0.com"
+vault_oidc_client_id       = "your-auth0-client-id"
+
+# SENSITIVE: Auth0 / OIDC Client Secret
+# Recommended: export TF_VAR_vault_oidc_client_secret="your-secret" instead of setting it here
+vault_oidc_client_secret   = "your-auth0-client-secret"
+
+vault_oidc_bound_email     = "admin@example.com"

@@ -8,6 +8,12 @@ provider "cloudflare" {
 
 provider "tls" {}
 
+provider "time" {}
+
+provider "cloudinit" {}
+
+provider "null" {}
+
 data "aws_caller_identity" "current" {}
 
 data "aws_partition" "current" {}
