@@ -231,34 +231,78 @@ def load_existing_credentials(output_file):
         return json.load(handle)
 
 
-# Persist the initialization response produced by Vault for later administrative actions.
-def persist_credentials(output_file, init_response):
-    os.makedirs(os.path.dirname(output_file), exist_ok=True)
-    payload = {
+# Load credentials from S3. Returns None if the object does not exist yet.
+def load_existing_credentials_s3(s3_uri):
+    result = subprocess.run(
+        ["aws", "s3", "cp", s3_uri, "-"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+
+
+# Build the credentials payload shared by both local and S3 persistence paths.
+def _build_credentials_payload(init_response):
+    return {
         "initialized_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "root_token": init_response["root_token"],
         "recovery_keys_b64": init_response.get("recovery_keys_b64", []),
         "recovery_keys_hex": init_response.get("recovery_keys_hex", []),
     }
+
+
+# Persist the initialization response produced by Vault for later administrative actions.
+def persist_credentials(output_file, init_response):
+    parent = os.path.dirname(output_file)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    payload = _build_credentials_payload(init_response)
     with open(output_file, "w", encoding="utf-8") as handle:
         json.dump(payload, handle, indent=2)
         handle.write("\n")
     log(f"Bootstrap credentials saved to {output_file}")
 
 
+# Upload credentials directly to S3 with SSE-KMS encryption. No local file is written.
+def persist_credentials_s3(s3_uri, init_response):
+    payload = _build_credentials_payload(init_response)
+    content = json.dumps(payload, indent=2) + "\n"
+    result = subprocess.run(
+        ["aws", "s3", "cp", "-", s3_uri, "--sse", "aws:kms"],
+        input=content,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"Failed to upload credentials to S3 ({s3_uri}): {result.stderr.strip()}")
+    log(f"Bootstrap credentials saved to {s3_uri}")
+
+
 # Initialize Vault once and return the root token; on reruns, reuse the stored token.
-def ensure_initialized(base_url, output_file):
+def ensure_initialized(base_url, output_file, output_s3_uri=None):
     status, payload = request("GET", f"{base_url}/v1/sys/init", timeout=30)
     if status != 200:
         raise RuntimeError(f"Unexpected status from /sys/init: {status}")
 
     if payload.get("initialized"):
         log("Vault is already initialized")
-        existing = load_existing_credentials(output_file)
+        existing = None
+        if output_s3_uri:
+            log(f"Loading existing credentials from {output_s3_uri}")
+            existing = load_existing_credentials_s3(output_s3_uri)
+        if not existing:
+            existing = load_existing_credentials(output_file)
         if not existing or not existing.get("root_token"):
             raise RuntimeError(
-                "Vault is already initialized, but no local root token file was found at "
-                f"{output_file}. Restore that file or re-run with a known root token manually."
+                "Vault is already initialized, but no credentials file was found at "
+                f"{output_s3_uri or output_file}. Restore that file or re-run with a known root token manually."
             )
         status, _ = request(
             "GET",
@@ -270,8 +314,8 @@ def ensure_initialized(base_url, output_file):
         if status == 403:
             raise RuntimeError(
                 "Vault is already initialized, but the root token stored in "
-                f"{output_file} is invalid for the current Vault cluster. "
-                "This usually means the local bootstrap file and the Raft data are out of sync."
+                f"{output_s3_uri or output_file} is invalid for the current Vault cluster. "
+                "This usually means the bootstrap file and the Raft data are out of sync."
             )
         return existing["root_token"]
 
@@ -286,7 +330,10 @@ def ensure_initialized(base_url, output_file):
         expected_statuses={200},
         timeout=120,
     )
-    persist_credentials(output_file, init_response)
+    if output_s3_uri:
+        persist_credentials_s3(output_s3_uri, init_response)
+    else:
+        persist_credentials(output_file, init_response)
     return init_response["root_token"]
 
 
@@ -571,7 +618,11 @@ def parse_args():
     parser.add_argument("--kubernetes-host", required=True)
     parser.add_argument("--kubernetes-ca-b64", required=True)
     parser.add_argument("--vault-ca-cert-b64", required=True)
-    parser.add_argument("--output-file", required=True)
+    parser.add_argument("--output-file", required=True,
+                        help="Caminho local para salvar vault-init.json (usado em runs locais).")
+    parser.add_argument("--output-s3-uri", default=None,
+                        help="URI S3 para salvar vault-init.json diretamente no bucket (ex: s3://bucket/path/vault-init.json). "
+                             "Quando fornecido, o arquivo NÃO é gravado localmente.")
     parser.add_argument("--postgres-host", required=True)
     parser.add_argument("--postgres-port", required=True, type=int)
     parser.add_argument("--postgres-database-name", required=True)
@@ -604,7 +655,7 @@ def main():
     try:
         base_url = f"https://127.0.0.1:{local_port}"
         wait_for_vault(base_url)
-        root_token = ensure_initialized(base_url, args.output_file)
+        root_token = ensure_initialized(base_url, args.output_file, args.output_s3_uri)
         wait_for_vault_post_init(base_url)
         ensure_kv_v2(base_url, root_token)
         ensure_kubernetes_auth(

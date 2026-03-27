@@ -117,21 +117,19 @@ jobs:
             --timeout=600s
 
       # ── 9. Bootstrap do Vault (com retry automático) ──────────────────────
+      # vault-init.json é gravado diretamente no S3 via --output-s3-uri.
+      # Nenhum arquivo de credenciais é criado no filesystem do runner.
       - name: Vault Bootstrap
         id: bootstrap
-        env:
-          TF_VAR_postgres_admin_password: ${{ secrets.POSTGRES_ADMIN_PASSWORD }}
-          TF_VAR_vault_oidc_client_secret: ${{ secrets.VAULT_OIDC_CLIENT_SECRET }}
         run: |
-          # Busca os valores necessários do state
-          CLUSTER_ENDPOINT=$(tofu output -raw eks_cluster_endpoint)
-          K8S_CA_B64=$(tofu output -raw eks_cluster_certificate_authority_data 2>/dev/null || \
+          CLUSTER_ENDPOINT=$(tofu output -raw eks_cluster_endpoint 2>/dev/null || \
             aws eks describe-cluster --name "${{ env.CLUSTER_NAME }}" --region "${{ env.AWS_REGION }}" \
-              --query 'cluster.certificateAuthority.data' --output text)
+              --query 'cluster.endpoint' --output text)
+          K8S_CA_B64=$(aws eks describe-cluster \
+            --name "${{ env.CLUSTER_NAME }}" --region "${{ env.AWS_REGION }}" \
+            --query 'cluster.certificateAuthority.data' --output text)
           VAULT_CA_B64=$(kubectl get secret vault-server-tls -n vault \
-            -o jsonpath='{.data.ca\.crt}' 2>/dev/null || \
-            kubectl get secret vault-internal-ca -n vault \
-              -o jsonpath='{.data.tls\.crt}' 2>/dev/null || echo "")
+            -o jsonpath='{.data.ca\.crt}' 2>/dev/null || echo "")
 
           python3 ./scripts/bootstrap_vault.py \
             --namespace "vault" \
@@ -141,7 +139,8 @@ jobs:
             --kubernetes-host "${CLUSTER_ENDPOINT}" \
             --kubernetes-ca-b64 "${K8S_CA_B64}" \
             --vault-ca-cert-b64 "${VAULT_CA_B64}" \
-            --output-file "./bootstrap/vault-init.json" \
+            --output-file "/tmp/vault-init.json" \
+            --output-s3-uri "s3://${{ secrets.TF_STATE_BUCKET }}/vault-bootstrap/vault-init.json" \
             --postgres-host "postgres-service.postgres.svc.cluster.local" \
             --postgres-port "5432" \
             --postgres-database-name "psdb" \
@@ -159,9 +158,6 @@ jobs:
       # ── 10. Retry do bootstrap se falhou ──────────────────────────────────
       - name: Vault Bootstrap (retry)
         if: failure() && steps.bootstrap.outcome == 'failure'
-        env:
-          TF_VAR_postgres_admin_password: ${{ secrets.POSTGRES_ADMIN_PASSWORD }}
-          TF_VAR_vault_oidc_client_secret: ${{ secrets.VAULT_OIDC_CLIENT_SECRET }}
         run: |
           echo "Primeira tentativa falhou. Aguardando 60s e tentando novamente..."
           sleep 60
@@ -183,7 +179,8 @@ jobs:
             --kubernetes-host "${CLUSTER_ENDPOINT}" \
             --kubernetes-ca-b64 "${K8S_CA_B64}" \
             --vault-ca-cert-b64 "${VAULT_CA_B64}" \
-            --output-file "./bootstrap/vault-init.json" \
+            --output-file "/tmp/vault-init.json" \
+            --output-s3-uri "s3://${{ secrets.TF_STATE_BUCKET }}/vault-bootstrap/vault-init.json" \
             --postgres-host "postgres-service.postgres.svc.cluster.local" \
             --postgres-port "5432" \
             --postgres-database-name "psdb" \
@@ -198,20 +195,7 @@ jobs:
             --oidc-bound-email "alan.and.costa@gmail.com" \
             --oidc-role-name "auth0-admin"
 
-      # ── 11. Persiste vault-init.json no S3 (bucket já tem criptografia KMS) ─
-      - name: Upload vault-init.json to S3
-        if: success() || steps.bootstrap.outcome == 'success'
-        run: |
-          if [[ -f "./bootstrap/vault-init.json" ]]; then
-            aws s3 cp ./bootstrap/vault-init.json \
-              "s3://${{ secrets.TF_STATE_BUCKET }}/vault-bootstrap/vault-init.json" \
-              --sse aws:kms
-            echo "vault-init.json salvo em s3://${{ secrets.TF_STATE_BUCKET }}/vault-bootstrap/vault-init.json"
-          else
-            echo "vault-init.json não encontrado — bootstrap pode ter pulado a inicialização (Vault já inicializado)."
-          fi
-
-      # ── 12. Outputs ────────────────────────────────────────────────────────
+      # ── 11. Outputs ────────────────────────────────────────────────────────
       - name: Terraform Outputs
         if: always()
         run: |
