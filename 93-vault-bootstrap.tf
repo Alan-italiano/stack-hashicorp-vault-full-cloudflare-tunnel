@@ -17,6 +17,8 @@ resource "kubernetes_cluster_role_binding_v1" "vault_auth_delegator" {
 }
 
 resource "null_resource" "vault_bootstrap" {
+  count = var.vault_bootstrap_enabled ? 1 : 0
+
   triggers = {
     always_run               = timestamp()
     script_hash              = filesha1("${path.module}/scripts/bootstrap_vault.py")

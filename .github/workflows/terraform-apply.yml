@@ -15,6 +15,8 @@ env:
   AWS_REGION: "us-east-1"
   CLUSTER_NAME: "vault-eks-lab"
   TF_STATE_KEY: "vault-eks-lab/terraform.tfstate"
+  # Bootstrap desabilitado no null_resource — roda como step separado abaixo.
+  TF_VAR_vault_bootstrap_enabled: "false"
 
 jobs:
   apply:
@@ -55,15 +57,7 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      # ── 4. kubeconfig (ignorar falha se o cluster ainda não existe) ───────
-      - name: Configure kubeconfig (pre-existing cluster)
-        continue-on-error: true
-        run: |
-          aws eks update-kubeconfig \
-            --name "${{ env.CLUSTER_NAME }}" \
-            --region "${{ env.AWS_REGION }}"
-
-      # ── 5. Terraform Init ─────────────────────────────────────────────────
+      # ── 4. Terraform Init ─────────────────────────────────────────────────
       - name: Terraform Init
         run: |
           tofu init \
@@ -76,9 +70,8 @@ jobs:
           TF_VAR_postgres_admin_password: ${{ secrets.POSTGRES_ADMIN_PASSWORD }}
           TF_VAR_vault_oidc_client_secret: ${{ secrets.VAULT_OIDC_CLIENT_SECRET }}
 
-      # ── 6. Terraform Plan ─────────────────────────────────────────────────
+      # ── 5. Terraform Plan ─────────────────────────────────────────────────
       - name: Terraform Plan
-        id: plan
         run: |
           tofu plan \
             -var-file=terraform.tfvars.ci \
@@ -99,7 +92,7 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # ── 7. Terraform Apply ────────────────────────────────────────────────
+      # ── 6. Terraform Apply (sem bootstrap) ────────────────────────────────
       - name: Terraform Apply
         run: tofu apply -auto-approve tfplan
         env:
@@ -107,21 +100,112 @@ jobs:
           TF_VAR_postgres_admin_password: ${{ secrets.POSTGRES_ADMIN_PASSWORD }}
           TF_VAR_vault_oidc_client_secret: ${{ secrets.VAULT_OIDC_CLIENT_SECRET }}
 
-      # ── 8. kubeconfig pós-apply (cluster pode ter sido criado agora) ──────
-      - name: Configure kubeconfig (post-apply)
-        if: always()
+      # ── 7. kubeconfig (cluster garantidamente existe após o apply) ─────────
+      - name: Configure kubeconfig
         run: |
           aws eks update-kubeconfig \
             --name "${{ env.CLUSTER_NAME }}" \
             --region "${{ env.AWS_REGION }}"
 
-      # ── 9. Outputs ────────────────────────────────────────────────────────
+      # ── 8. Aguarda Vault Ready antes do bootstrap ─────────────────────────
+      - name: Wait for Vault pods Ready
+        run: |
+          echo "Aguardando vault-0 ficar Ready (timeout 10min)..."
+          kubectl wait pod/vault-0 \
+            --namespace vault \
+            --for=condition=Ready \
+            --timeout=600s
+
+      # ── 9. Bootstrap do Vault (com retry automático) ──────────────────────
+      - name: Vault Bootstrap
+        id: bootstrap
+        env:
+          TF_VAR_postgres_admin_password: ${{ secrets.POSTGRES_ADMIN_PASSWORD }}
+          TF_VAR_vault_oidc_client_secret: ${{ secrets.VAULT_OIDC_CLIENT_SECRET }}
+        run: |
+          # Busca os valores necessários do state
+          CLUSTER_ENDPOINT=$(tofu output -raw eks_cluster_endpoint)
+          K8S_CA_B64=$(tofu output -raw eks_cluster_certificate_authority_data 2>/dev/null || \
+            aws eks describe-cluster --name "${{ env.CLUSTER_NAME }}" --region "${{ env.AWS_REGION }}" \
+              --query 'cluster.certificateAuthority.data' --output text)
+          VAULT_CA_B64=$(kubectl get secret vault-server-tls -n vault \
+            -o jsonpath='{.data.ca\.crt}' 2>/dev/null || \
+            kubectl get secret vault-internal-ca -n vault \
+              -o jsonpath='{.data.tls\.crt}' 2>/dev/null || echo "")
+
+          python3 ./scripts/bootstrap_vault.py \
+            --namespace "vault" \
+            --service-account "vault" \
+            --cluster-name "${{ env.CLUSTER_NAME }}" \
+            --region "${{ env.AWS_REGION }}" \
+            --kubernetes-host "${CLUSTER_ENDPOINT}" \
+            --kubernetes-ca-b64 "${K8S_CA_B64}" \
+            --vault-ca-cert-b64 "${VAULT_CA_B64}" \
+            --output-file "./bootstrap/vault-init.json" \
+            --postgres-host "postgres-service.postgres.svc.cluster.local" \
+            --postgres-port "5432" \
+            --postgres-database-name "psdb" \
+            --postgres-admin-username "psuser" \
+            --postgres-admin-password "${{ secrets.POSTGRES_ADMIN_PASSWORD }}" \
+            --vault-db-connection-name "postgres" \
+            --vault-db-role-name "postgres-dynamic" \
+            --vault-hostname "vault.lab-internal.com.br" \
+            --oidc-discovery-url "https://dev-xshlmenrpahbcg1d.us.auth0.com/" \
+            --oidc-client-id "h38ZpE10ODF1fShcYTUZ5M5vyKGrka0U" \
+            --oidc-client-secret "${{ secrets.VAULT_OIDC_CLIENT_SECRET }}" \
+            --oidc-bound-email "alan.and.costa@gmail.com" \
+            --oidc-role-name "auth0-admin"
+
+      # ── 10. Retry do bootstrap se falhou ──────────────────────────────────
+      - name: Vault Bootstrap (retry)
+        if: failure() && steps.bootstrap.outcome == 'failure'
+        env:
+          TF_VAR_postgres_admin_password: ${{ secrets.POSTGRES_ADMIN_PASSWORD }}
+          TF_VAR_vault_oidc_client_secret: ${{ secrets.VAULT_OIDC_CLIENT_SECRET }}
+        run: |
+          echo "Primeira tentativa falhou. Aguardando 60s e tentando novamente..."
+          sleep 60
+
+          CLUSTER_ENDPOINT=$(aws eks describe-cluster \
+            --name "${{ env.CLUSTER_NAME }}" --region "${{ env.AWS_REGION }}" \
+            --query 'cluster.endpoint' --output text)
+          K8S_CA_B64=$(aws eks describe-cluster \
+            --name "${{ env.CLUSTER_NAME }}" --region "${{ env.AWS_REGION }}" \
+            --query 'cluster.certificateAuthority.data' --output text)
+          VAULT_CA_B64=$(kubectl get secret vault-server-tls -n vault \
+            -o jsonpath='{.data.ca\.crt}' 2>/dev/null || echo "")
+
+          python3 ./scripts/bootstrap_vault.py \
+            --namespace "vault" \
+            --service-account "vault" \
+            --cluster-name "${{ env.CLUSTER_NAME }}" \
+            --region "${{ env.AWS_REGION }}" \
+            --kubernetes-host "${CLUSTER_ENDPOINT}" \
+            --kubernetes-ca-b64 "${K8S_CA_B64}" \
+            --vault-ca-cert-b64 "${VAULT_CA_B64}" \
+            --output-file "./bootstrap/vault-init.json" \
+            --postgres-host "postgres-service.postgres.svc.cluster.local" \
+            --postgres-port "5432" \
+            --postgres-database-name "psdb" \
+            --postgres-admin-username "psuser" \
+            --postgres-admin-password "${{ secrets.POSTGRES_ADMIN_PASSWORD }}" \
+            --vault-db-connection-name "postgres" \
+            --vault-db-role-name "postgres-dynamic" \
+            --vault-hostname "vault.lab-internal.com.br" \
+            --oidc-discovery-url "https://dev-xshlmenrpahbcg1d.us.auth0.com/" \
+            --oidc-client-id "h38ZpE10ODF1fShcYTUZ5M5vyKGrka0U" \
+            --oidc-client-secret "${{ secrets.VAULT_OIDC_CLIENT_SECRET }}" \
+            --oidc-bound-email "alan.and.costa@gmail.com" \
+            --oidc-role-name "auth0-admin"
+
+      # ── 11. Outputs ────────────────────────────────────────────────────────
       - name: Terraform Outputs
+        if: always()
         run: |
           {
             echo "### Terraform Outputs"
             echo '```'
-            tofu output
+            tofu output 2>/dev/null || echo "(outputs indisponíveis)"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
         env:

@@ -186,3 +186,9 @@ variable "vault_oidc_role_name" {
   type        = string
   default     = "auth0-admin"
 }
+
+variable "vault_bootstrap_enabled" {
+  description = "Executa o bootstrap do Vault via null_resource local-exec. Desabilite em CI (false) e execute o bootstrap como step separado no workflow."
+  type        = bool
+  default     = true
+}
