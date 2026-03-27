@@ -1,6 +1,11 @@
 terraform {
   required_version = ">= 1.6.0"
 
+  # Remote state via S3 — bucket/key/region are passed via -backend-config flags in CI.
+  # For local runs: tofu init -backend-config=backend.local.hcl
+  # For CI: bucket and key come from GitHub Secret TF_STATE_BUCKET.
+  backend "s3" {}
+
   required_providers {
     aws = {
       source  = "hashicorp/aws"

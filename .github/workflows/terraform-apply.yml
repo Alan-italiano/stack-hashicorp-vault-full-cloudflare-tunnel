@@ -1,0 +1,130 @@
+name: Terraform Apply
+
+# Execução apenas manual — sem agendamento automático.
+on:
+  workflow_dispatch:
+
+# Evita execuções paralelas que corrompem o state.
+concurrency:
+  group: terraform
+  cancel-in-progress: false
+
+env:
+  TOFU_VERSION: "1.8.3"
+  KUBECTL_VERSION: "v1.30.9"
+  AWS_REGION: "us-east-1"
+  CLUSTER_NAME: "vault-eks-lab"
+  TF_STATE_KEY: "vault-eks-lab/terraform.tfstate"
+
+jobs:
+  apply:
+    name: Plan & Apply
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      # ── 1. Código ──────────────────────────────────────────────────────────
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── 2. Ferramentas ────────────────────────────────────────────────────
+      - name: Setup OpenTofu
+        uses: opentofu/setup-opentofu@v1
+        with:
+          tofu_version: ${{ env.TOFU_VERSION }}
+          tofu_wrapper: false
+
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: ${{ env.KUBECTL_VERSION }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python dependencies
+        run: pip install requests
+
+      # ── 3. Credenciais AWS ────────────────────────────────────────────────
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # ── 4. kubeconfig (ignorar falha se o cluster ainda não existe) ───────
+      - name: Configure kubeconfig (pre-existing cluster)
+        continue-on-error: true
+        run: |
+          aws eks update-kubeconfig \
+            --name "${{ env.CLUSTER_NAME }}" \
+            --region "${{ env.AWS_REGION }}"
+
+      # ── 5. Terraform Init ─────────────────────────────────────────────────
+      - name: Terraform Init
+        run: |
+          tofu init \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="key=${{ env.TF_STATE_KEY }}" \
+            -backend-config="region=${{ env.AWS_REGION }}" \
+            -upgrade
+        env:
+          TF_VAR_cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          TF_VAR_postgres_admin_password: ${{ secrets.POSTGRES_ADMIN_PASSWORD }}
+          TF_VAR_vault_oidc_client_secret: ${{ secrets.VAULT_OIDC_CLIENT_SECRET }}
+
+      # ── 6. Terraform Plan ─────────────────────────────────────────────────
+      - name: Terraform Plan
+        id: plan
+        run: |
+          tofu plan \
+            -var-file=terraform.tfvars.ci \
+            -out=tfplan \
+            2>&1 | tee plan_output.txt
+        env:
+          TF_VAR_cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          TF_VAR_postgres_admin_password: ${{ secrets.POSTGRES_ADMIN_PASSWORD }}
+          TF_VAR_vault_oidc_client_secret: ${{ secrets.VAULT_OIDC_CLIENT_SECRET }}
+
+      - name: Publish plan summary
+        run: |
+          {
+            echo "### Terraform Plan — $(date -u '+%Y-%m-%d %H:%M UTC')"
+            echo ""
+            echo '```'
+            grep -E "(#|Plan:|No changes)" plan_output.txt | head -80 || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # ── 7. Terraform Apply ────────────────────────────────────────────────
+      - name: Terraform Apply
+        run: tofu apply -auto-approve tfplan
+        env:
+          TF_VAR_cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          TF_VAR_postgres_admin_password: ${{ secrets.POSTGRES_ADMIN_PASSWORD }}
+          TF_VAR_vault_oidc_client_secret: ${{ secrets.VAULT_OIDC_CLIENT_SECRET }}
+
+      # ── 8. kubeconfig pós-apply (cluster pode ter sido criado agora) ──────
+      - name: Configure kubeconfig (post-apply)
+        if: always()
+        run: |
+          aws eks update-kubeconfig \
+            --name "${{ env.CLUSTER_NAME }}" \
+            --region "${{ env.AWS_REGION }}"
+
+      # ── 9. Outputs ────────────────────────────────────────────────────────
+      - name: Terraform Outputs
+        run: |
+          {
+            echo "### Terraform Outputs"
+            echo '```'
+            tofu output
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+        env:
+          TF_VAR_cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          TF_VAR_postgres_admin_password: ${{ secrets.POSTGRES_ADMIN_PASSWORD }}
+          TF_VAR_vault_oidc_client_secret: ${{ secrets.VAULT_OIDC_CLIENT_SECRET }}

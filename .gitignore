@@ -19,6 +19,10 @@ terraform.rc
 *.tfvars
 *.tfvars.json
 !*.tfvars.example
+!*.tfvars.ci
+
+# Local backend config (contém nome de bucket — não commitar)
+backend.local.hcl
 
 # Local environment files
 .env
