@@ -198,7 +198,20 @@ jobs:
             --oidc-bound-email "alan.and.costa@gmail.com" \
             --oidc-role-name "auth0-admin"
 
-      # ── 11. Outputs ────────────────────────────────────────────────────────
+      # ── 11. Persiste vault-init.json no S3 (bucket já tem criptografia KMS) ─
+      - name: Upload vault-init.json to S3
+        if: success() || steps.bootstrap.outcome == 'success'
+        run: |
+          if [[ -f "./bootstrap/vault-init.json" ]]; then
+            aws s3 cp ./bootstrap/vault-init.json \
+              "s3://${{ secrets.TF_STATE_BUCKET }}/vault-bootstrap/vault-init.json" \
+              --sse aws:kms
+            echo "vault-init.json salvo em s3://${{ secrets.TF_STATE_BUCKET }}/vault-bootstrap/vault-init.json"
+          else
+            echo "vault-init.json não encontrado — bootstrap pode ter pulado a inicialização (Vault já inicializado)."
+          fi
+
+      # ── 12. Outputs ────────────────────────────────────────────────────────
       - name: Terraform Outputs
         if: always()
         run: |
